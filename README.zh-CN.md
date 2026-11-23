@@ -23,6 +23,8 @@
 
 Isaac 在每个物理子步施加 `tau + kp * (q_target - q) + kd * (dq_target - dq)`。默认电机频率为 300 Hz，每周期执行四个 PhysX 子步，积分间隔小于 1 ms。PhysX 提供关节位置、速度和力矩反馈。初始姿态采用上游 SDK 的 `DEFAULT_HOME_Q16`。官方模型与二进制在仓库外获取。
 
+无界面运行直接从 PhysX 读取电机状态，并跳过每个子步将变换和速度写回 USD 的操作。GUI 模式会发布视口所需的变换。[Omni Physics 107.3 性能指南](https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.3/dev_guide/guides/physics-performance.html#render-transforms-in-runtime-fabric)
+
 ServoP 运行时，Isaac 在每次电机更新时按机构当前姿态计算重力补偿，并补入控制器前馈全为零的手臂中启用位置控制的关节。LimX 的 `/move_cmd` ServoP 事件使补偿生效 100 ms，每个新采样点都会刷新该时间窗。需要维持位姿时，持续发送终点目标。[PhysX 机构重力 API](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/py/source/extensions/isaacsim.core.prims/docs/index.html#isaacsim.core.prims.Articulation.get_generalized_gravity_forces)
 
 ## PhysX 快速开始
@@ -127,9 +129,9 @@ ServoP 运行时，Isaac 在每次电机更新时按机构当前姿态计算重�
 | --- | --- | --- |
 | `H_SAFE` · MoveH | 通过 | 通过 |
 | `J_PREP` · MoveJ | 通过 | 通过 |
-| `P_REACHABLE` · MoveP | 通过 · 位置误差 14.1 mm | 通过 · 位置误差 12.7 mm |
+| `P_REACHABLE` · MoveP | 通过 · 位置误差 13.2 mm | 通过 · 位置误差 12.7 mm |
 | `SJ_TRACK` · ServoJ | 通过 | 通过 |
-| `SP_TRACK` · ServoP | 通过 · 到达误差 12.5 mm | 通过 · 到达误差 20.3 mm |
+| `SP_TRACK` · ServoP | 通过 · 到达误差 8.22 mm | 通过 · 到达误差 20.3 mm |
 
 表中的位姿误差来自 SDK 的仿真末端估计。此前使用上游客户端的合并字段 `data.pos` 时，两种仿真器的 `SP_TRACK` 误差均为 198.6 mm。拆分字段后，两边都在以 100 Hz 发送同样的 301 帧后达到了 30 mm 的容差要求。
 
@@ -140,26 +142,26 @@ Isaac Sim 对照试验使用相同的 100 Hz 轨迹，并在终点续发 3 s。�
 | `SP_TRACK` | 12.56 mm | 0.0048 mm |
 | 从准备姿态双臂各向前 25 mm | 9.59 mm | 0.0109 mm |
 
-另一次独立运行的 0.1 mm 保持检查以 0.0137 mm 通过。
+当前无界面电机循环通过了独立的 0.1 mm 保持检查，实测误差为 0.0224 mm。
 
 先进入准备姿态后，Isaac Sim 和固定版本的 MuJoCo 基线均通过 300 Hz 套件的 **6/6**。该套件在伺服回到起始位姿后评估精度，100 Hz 的 `SP_TRACK` 用例则在去程目标点评估到达误差。独立 PhysX 冒烟检查确认了全部 16 轴，并跟踪四个命令轴，最大稳态位置误差为 0.0403 rad。
 
 当前场景用于双臂和头部控制。导入的夹爪为刚性几何体，场景不包含可驱动手指或物体操作。场景没有桌面。后续扩展 TRON2 桌面场景时，须按模型原始变换定位物理底座原点，并保持 `physical_base_z = table_top_z + 0.45` m。
 
-Isaac GUI 已渲染机器人，并通过独立 PhysX 冒烟检查。在 GUI 联调会话中，3 s ServoP 用例通过，SDK 实测发送频率为 299.99 Hz。GUI ServoJ 用例在运动前停在 SDK 起始姿态校验。联调步骤中的准备动作可用于建立该起始姿态。
+Isaac GUI 已渲染机器人，并通过独立 PhysX 冒烟检查。GUI 联调也通过了带准备动作的 6 个 SDK 伺服用例，其中包括两个 ServoJ 和两个 ServoP。SDK 以约 300 Hz 发送了全部计划指令。同一轮 20 s GUI 采集中，渲染开启时观测到的电机状态到达频率为 62.59 Hz。
 
 ### 长轨迹与 VLA 回放
 
-两个仿真器均使用固定版本控制器与 SDK，执行相同的运动请求。完整 Move 套件包括 MoveJ、MoveH 和 MoveP 各两个 65 s 用例。VLA 回放使用 3,138 帧源轨迹，在约 104.57 s 的源轨迹段发送 31,371 个 SDK 指令。两边均完成了全部计划发送，且均未触发关节硬限位裁剪。
+两个仿真器均使用固定版本控制器与 SDK，执行相同的运动请求。完整 Move 套件包括 MoveJ、MoveH 和 MoveP 各两个用例，每个用例的活动时长配置为 65 s。SDK 会执行完整的最后一段，因此每段 2 s 的用例实际运行 66 s。VLA 回放使用 3,138 帧源轨迹，在约 104.57 s 的源轨迹段发送 31,371 个 SDK 指令。两边均完成了全部计划发送，且均未触发关节硬限位裁剪。
 
 | 结果 | 上游 MuJoCo | Isaac Sim |
 | --- | --- | --- |
 | Move 长轨迹 SDK 用例，含准备 | 8/8 | 8/8 |
-| MoveP 长轨迹最差 SDK 位置误差 | 13.72 mm | 12.56 mm |
+| MoveP 长轨迹最差 SDK 位置误差 | 13.72 mm | 13.62 mm |
 | VLA SDK 用例，含准备 | 3/3 | 3/3 |
-| VLA SDK 指令总数，含预热、过渡及返回 | 32,119/32,119 | 32,120/32,120 |
+| VLA SDK 指令总数，含预热、过渡及返回 | 32,119/32,119 | 32,119/32,119 |
 | VLA SDK 发送频率 | 300.01 Hz | 300.01 Hz |
-| VLA 最大 SDK 关节跟踪误差 | 0.000140 rad | 0.000535 rad |
+| VLA 最大 SDK 关节跟踪误差 | 0.000140 rad | 0.000140 rad |
 
 ### 同条件轨迹对照
 
@@ -181,9 +183,11 @@ Isaac GUI 已渲染机器人，并通过独立 PhysX 冒烟检查。在 GUI 联�
 
 | 同条件对照结果 | MuJoCo | Isaac Sim，关闭 ServoP 补偿 |
 | --- | --- | --- |
-| ServoJ 运动 3 s 内的关节跟踪 P95 | 0.00154 rad | 0.00748 rad |
-| ServoP 运动 3 s 内的位置跟踪 P95 | 13.01 mm | 16.49 mm |
-| ServoP 保持 3 s 后的位置误差 | 12.54 mm | 12.54 mm |
+| ServoJ 运动 3 s 内的关节跟踪 P95 | 0.00154 rad | 0.00169 rad |
+| ServoP 运动 3 s 内的位置跟踪 P95 | 13.01 mm | 13.01 mm |
+| ServoP 保持 3 s 后的位置误差 | 12.54 mm | 12.53 mm |
+
+对运动和保持阶段的 300 对 ServoP 时间配对样本，两边 SDK 回读末端位置的差值 P95 为 0.157 mm。
 
 ### 电机流时序
 
@@ -199,11 +203,15 @@ Isaac GUI 已渲染机器人，并通过独立 PhysX 冒烟检查。在 GUI 联�
 
 时序测量包含回调调度和采集链路上的桥接开销。可用到达间隔估计缺失的周期，精确丢包计数需要消息序列号，而这些消息未提供序列号。通信仍连接但暂时没有新指令时，Isaac 沿用上一条指令。观察器使用 20 ms 阈值统计消息到达时的年龄。CPU CI 通过 `python -m unittest discover -s tests -p 'test_*.py' -v` 运行，无需 Isaac Sim 或 ROS。
 
-分别在两个无界面会话中使用相同的准备版 SDK 伺服套件采集 20 s，两边均通过 6 个 SDK 用例。观测到的指令流均约为 300 Hz。该轮 Isaac 的电机状态发布频率为 85.15 Hz，低于 300 Hz 目标。ROS 2 子进程的发布消息时间戳也显示出这一频率。
+在 20 s 的无界面采集中，MuJoCo 和 Isaac 均通过同一套准备版 SDK 伺服套件的 6 个用例。关闭每个子步的 USD 回写后，Isaac 状态到达频率从 85.15 Hz 提升到 296.98–297.91 Hz。第二次采集所在的 Isaac 会话运行了 50.00 s，电机循环记录了 14,923 帧状态，即 298.45 Hz。默认目标为 300 Hz。
 
-| 观测流 | MuJoCo 到达频率 | Isaac 到达频率 | MuJoCo 间隔 P95 | Isaac 间隔 P95 |
-| --- | ---: | ---: | ---: | ---: |
-| `/motor/cmd` | 299.91 Hz | 300.04 Hz | 6.95 ms | 6.95 ms |
-| `/motor/state` | 300.01 Hz | 85.15 Hz | 4.06 ms | 16.63 ms |
+| 观测流 | 指标 | MuJoCo | Isaac 开启 USD 回写 | Isaac 无界面第二次采集 |
+| --- | --- | ---: | ---: | ---: |
+| `/motor/cmd` | 到达频率 | 299.91 Hz | 300.04 Hz | 300.36 Hz |
+| `/motor/cmd` | 到达间隔 P95 | 6.95 ms | 6.95 ms | 6.95 ms |
+| `/motor/state` | 到达频率 | 300.01 Hz | 85.15 Hz | 297.91 Hz |
+| `/motor/state` | 到达间隔 P95 | 4.06 ms | 16.63 ms | 4.71 ms |
 
-两次采集位于桥接链路的不同位置，数据反映各采集点的时序。控制器端的接收时序仍未测量。同一主机的独立无界面性能测试中，每个 PhysX 子步平均耗时 2.71 ms。电机循环每周期执行四个子步，该配置下的反馈频率受此限制。
+独立的无界面 A/B 测试在每种配置下不限速运行 900 个电机周期，每周期执行四个 PhysX 子步。两轮均使用 20 个 Kit 线程与 8 个 PhysX 工作线程。关闭 USD 回写后，吞吐从 109.67 提升到 380.20 周期/秒，记录的关节位置、速度和力矩样本完全一致。
+
+采集数据反映上面所述桥接位置的时序。控制器端的接收时序仍未测量。

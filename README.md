@@ -23,6 +23,8 @@ This repository provides an Isaac Sim 5.1 motor simulator for the LimX DACH_TRON
 
 Isaac applies `tau + kp * (q_target - q) + kd * (dq_target - dq)` at each physics substep. At the default 300 Hz motor rate, four PhysX substeps keep the integration interval below 1 ms. PhysX reports joint position, velocity and effort. The initial pose is the upstream SDK's `DEFAULT_HOME_Q16` pose. Vendor assets and binaries are external dependencies.
 
+Headless runs read motor state directly from PhysX and skip per-substep writeback of transforms and velocities to USD. GUI runs publish transforms for the viewport. [Omni Physics 107.3 performance guide](https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.3/dev_guide/guides/physics-performance.html#render-transforms-in-runtime-fabric)
+
 During ServoP, Isaac computes gravity compensation from the articulation's current pose at each motor update. It adds the result to the powered joints of each arm whose controller feedforward vector is zero. The LimX `/move_cmd` ServoP event enables compensation for 100 ms, and each new ServoP sample refreshes that window. Keep sending the final target while holding a pose. [PhysX articulation gravity API](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/py/source/extensions/isaacsim.core.prims/docs/index.html#isaacsim.core.prims.Articulation.get_generalized_gravity_forces)
 
 ## PhysX quick start
@@ -127,9 +129,9 @@ On Ubuntu 24.04 with Isaac Sim 5.1.0 and an RTX 5080, the upstream default SDK s
 | --- | --- | --- |
 | `H_SAFE` · MoveH | Pass | Pass |
 | `J_PREP` · MoveJ | Pass | Pass |
-| `P_REACHABLE` · MoveP | Pass · 14.1 mm position error | Pass · 12.7 mm position error |
+| `P_REACHABLE` · MoveP | Pass · 13.2 mm position error | Pass · 12.7 mm position error |
 | `SJ_TRACK` · ServoJ | Pass | Pass |
-| `SP_TRACK` · ServoP | Pass · 12.5 mm arrival error | Pass · 20.3 mm arrival error |
+| `SP_TRACK` · ServoP | Pass · 8.22 mm arrival error | Pass · 20.3 mm arrival error |
 
 The pose errors come from the SDK's simulated end-effector estimate. With the upstream client's packed `data.pos` field, both simulators previously reported a 198.6 mm `SP_TRACK` error. With split fields, both stayed within the 30 mm tolerance after the same 301 packets at 100 Hz.
 
@@ -140,26 +142,26 @@ In the Isaac Sim A/B run, the same 100 Hz trajectories held their final targets 
 | `SP_TRACK` | 12.56 mm | 0.0048 mm |
 | Both arms 25 mm forward from the prepared pose | 9.59 mm | 0.0109 mm |
 
-The standalone 0.1 mm hold check ended at 0.0137 mm in a separate run.
+With the current headless motor loop, the standalone 0.1 mm hold check passed at 0.0224 mm.
 
 Isaac Sim and the pinned MuJoCo reference each passed **6/6** cases in the prepared 300 Hz suite. That suite scores servo pose accuracy after return to the starting pose. The 100 Hz `SP_TRACK` case scores arrival at the commanded outbound target. The standalone PhysX smoke confirmed all 16 joints and tracked four commanded axes with a maximum steady-state position error of 0.0403 rad.
 
 The shipped scene exercises arm and head control. The imported gripper geometry is rigid, so the scene has no actuated fingers or object manipulation. It has no tabletop. For any TRON2 tabletop extension, resolve the physical base origin from the model's authored transforms and keep `physical_base_z = table_top_z + 0.45` m.
 
-The Isaac GUI rendered the robot and passed the standalone PhysX smoke check. In an integrated GUI session, the 3 s ServoP case passed with a measured SDK send rate of 299.99 Hz. The GUI ServoJ case stopped at SDK start-pose validation before motion. Use the preparation cases in the integration steps to establish the start pose.
+The Isaac GUI rendered the robot and passed the standalone PhysX smoke check. The integrated GUI also passed the prepared six-case SDK servo suite, including two ServoJ and two ServoP cases. The SDK sent all planned commands at about 300 Hz. In the same 20 s GUI capture, observed motor state arrived at 62.59 Hz while rendering.
 
 ### Long motion and VLA playback
 
-Both simulators used the pinned controller and SDK with the same motion requests. The full Move suite includes two 65 s cases each for MoveJ, MoveH and MoveP. The VLA replay uses 3,138 source frames and 31,371 source-phase SDK sends over 104.57 s. Both engines completed every planned send and had zero hard-limit clamps.
+Both simulators used the pinned controller and SDK with the same motion requests. The full Move suite includes two cases each for MoveJ, MoveH and MoveP, with a configured active duration of 65 s per case. The SDK finishes the final segment, so runs with 2 s segments reach 66 s. The VLA replay uses 3,138 source frames and 31,371 source-phase SDK sends over 104.57 s. Both engines completed every planned send and had zero hard-limit clamps.
 
 | Result | Upstream MuJoCo | Isaac Sim |
 | --- | --- | --- |
 | Long Move SDK cases, including preparation | 8/8 | 8/8 |
-| Worst SDK MoveP position error across the long cases | 13.72 mm | 12.56 mm |
+| Worst SDK MoveP position error across the long cases | 13.72 mm | 13.62 mm |
 | VLA SDK cases, including preparation | 3/3 | 3/3 |
-| VLA total SDK sends, including warmup, transition and return | 32,119/32,119 | 32,120/32,120 |
+| VLA total SDK sends, including warmup, transition and return | 32,119/32,119 | 32,119/32,119 |
 | VLA SDK send rate | 300.01 Hz | 300.01 Hz |
-| VLA maximum SDK joint tracking error | 0.000140 rad | 0.000535 rad |
+| VLA maximum SDK joint tracking error | 0.000140 rad | 0.000140 rad |
 
 ### Matched motion traces
 
@@ -181,9 +183,11 @@ The comparison script sends identical 100 Hz ServoJ and ServoP references to the
 
 | Paired result | MuJoCo | Isaac Sim, ServoP compensation disabled |
 | --- | --- | --- |
-| ServoJ joint tracking P95 during the 3 s ramp | 0.00154 rad | 0.00748 rad |
-| ServoP position tracking P95 during the 3 s ramp | 13.01 mm | 16.49 mm |
-| ServoP position error after the 3 s hold | 12.54 mm | 12.54 mm |
+| ServoJ joint tracking P95 during the 3 s ramp | 0.00154 rad | 0.00169 rad |
+| ServoP position tracking P95 during the 3 s ramp | 13.01 mm | 13.01 mm |
+| ServoP position error after the 3 s hold | 12.54 mm | 12.53 mm |
+
+Across 300 time-matched ServoP samples spanning motion and hold, the P95 difference between the two SDK end-effector positions was 0.157 mm.
 
 ### Motor stream timing
 
@@ -199,11 +203,15 @@ Run the read-only timing observer inside the isolated simulation session. It rec
 
 The timings include callback scheduling and any bridge in the capture path. Arrival gaps can estimate missed periods. Exact drop counts require a sequence number, which these messages lack. Isaac holds the last command during a publication gap while the transport stays connected. The observer uses a 20 ms threshold for reporting message age. The CPU CI workflow runs `python -m unittest discover -s tests -p 'test_*.py' -v` without Isaac Sim or ROS.
 
-In separate 20 s headless captures with the same prepared SDK servo suite, both engines passed all six SDK cases. The observed command stream ran at about 300 Hz on both engines. Isaac published motor state at 85.15 Hz in this run, below its 300 Hz target. The sidecar publication timestamps showed the same rate.
+In 20 s headless captures of the same prepared SDK servo suite, MuJoCo and Isaac passed all six SDK cases. Isaac state delivery rose from 85.15 Hz to 296.98–297.91 Hz after skipping per-substep USD writeback. The 50.00 s Isaac session containing the second capture counted 14,923 state frames in the motor loop, or 298.45 Hz. The default target is 300 Hz.
 
-| Observed stream | MuJoCo arrival rate | Isaac arrival rate | MuJoCo interval P95 | Isaac interval P95 |
-| --- | ---: | ---: | ---: | ---: |
-| `/motor/cmd` | 299.91 Hz | 300.04 Hz | 6.95 ms | 6.95 ms |
-| `/motor/state` | 300.01 Hz | 85.15 Hz | 4.06 ms | 16.63 ms |
+| Observed stream | Metric | MuJoCo | Isaac with USD writeback | Isaac headless, second run |
+| --- | --- | ---: | ---: | ---: |
+| `/motor/cmd` | Arrival rate | 299.91 Hz | 300.04 Hz | 300.36 Hz |
+| `/motor/cmd` | Interarrival P95 | 6.95 ms | 6.95 ms | 6.95 ms |
+| `/motor/state` | Arrival rate | 300.01 Hz | 85.15 Hz | 297.91 Hz |
+| `/motor/state` | Interarrival P95 | 4.06 ms | 16.63 ms | 4.71 ms |
 
-The captures observe different points in the bridge paths and give the cadence at those points. Controller-side receive timing remains unmeasured. A standalone headless profile on the same host found a mean of 2.71 ms per PhysX substep. The motor loop performs four substeps per cycle, which limits feedback cadence under this configuration.
+A standalone headless A/B ran 900 unpaced motor cycles per configuration, each with four PhysX substeps, using 20 Kit threads and eight PhysX workers in both runs. Turning off USD writeback increased throughput from 109.67 to 380.20 cycles/s. Recorded joint position, velocity and effort samples matched exactly.
+
+The captures measure cadence at the bridge points described above. Controller-side receive timing remains unmeasured.

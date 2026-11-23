@@ -162,6 +162,13 @@ class IsaacRobot:
                     joint_indices=self._joint_indices,
                 )
             )
+            if self._headless:
+                # Headless feedback reads PhysX tensors. Skip per-step USD
+                # writeback on the stage owned by this SimulationApp.
+                self._world.get_physics_context().set_physx_update_transformations_settings(
+                    update_to_usd=False,
+                    update_velocities_to_usd=False,
+                )
             self._world.play()
         except BaseException as exc:
             self.close(exc)
