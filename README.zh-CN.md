@@ -20,6 +20,8 @@
 
 Isaac 在每个物理子步施加 `tau + kp * (q_target - q) + kd * (dq_target - dq)`。默认电机频率为 300 Hz，每周期执行四个 PhysX 子步，积分间隔小于 1 ms。PhysX 提供关节位置、速度和力矩反馈。初始姿态采用上游 SDK 的 `DEFAULT_HOME_Q16`。官方模型与二进制在仓库外获取。
 
+ServoP 运行时，Isaac 在每次电机更新时按机构当前姿态计算重力补偿，并补入控制器前馈全为零的手臂中启用位置控制的关节。LimX 的 `/move_cmd` ServoP 事件使补偿生效 100 ms，每个新采样点都会刷新该时间窗。需要维持位姿时，持续发送终点目标。[PhysX 机构重力 API](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/py/source/extensions/isaacsim.core.prims/docs/index.html#isaacsim.core.prims.Articulation.get_generalized_gravity_forces)
+
 ## PhysX 快速开始
 
 在安装 Isaac Sim 的主机上，从本仓库根目录执行。`ISAAC_PYTHON` 指向 Isaac Sim 5.1 的 Python 启动器，例如独立安装的 `python.sh` 或 pip 安装环境的 `bin/python`。
@@ -97,6 +99,12 @@ Isaac 在每个物理子步施加 `tau + kp * (q_target - q) + kd * (dq_target -
      --output-dir "$TRON2_RUN_DIR/sdk-servo"
    ```
 
+6. 激活 SDK Python 环境后，从仓库根目录运行 ServoP 稳态检查。它以 100 Hz 发送上游 `SP_TRACK` 轨迹，续发终点 3 s，并按 0.1 mm 阈值检查 SDK 回读的末端位置误差。在 `--` 前加 `--no-servop-gravity-compensation`，即可使用原版 LimX 前馈运行同一检查。
+
+   ```bash
+   ./scripts/run_sim.sh -- python3 tests/check_servop_hold.py
+   ```
+
 ## 验证与范围
 
 在 Ubuntu 24.04、Isaac Sim 5.1.0 和 RTX 5080 上，通过本仓库的 SDK 入口运行上游默认套件，预检和 5 个运动用例全部通过。固定版本的 MuJoCo 基线采用修正后的 ServoP 字段，也通过了全部 5 个用例。两次运行均沿用上游目标、发送频率和精度阈值。
@@ -105,11 +113,20 @@ Isaac 在每个物理子步施加 `tau + kp * (q_target - q) + kd * (dq_target -
 | --- | --- | --- |
 | `H_SAFE` · MoveH | 通过 | 通过 |
 | `J_PREP` · MoveJ | 通过 | 通过 |
-| `P_REACHABLE` · MoveP | 通过 · 位置误差 12.9 mm | 通过 · 位置误差 12.7 mm |
+| `P_REACHABLE` · MoveP | 通过 · 位置误差 14.1 mm | 通过 · 位置误差 12.7 mm |
 | `SJ_TRACK` · ServoJ | 通过 | 通过 |
-| `SP_TRACK` · ServoP | 通过 · 位置误差 25.1 mm | 通过 · 位置误差 20.3 mm |
+| `SP_TRACK` · ServoP | 通过 · 到达误差 12.5 mm | 通过 · 到达误差 20.3 mm |
 
 表中的位姿误差来自 SDK 的仿真末端估计。此前使用上游客户端的合并字段 `data.pos` 时，两种仿真器的 `SP_TRACK` 误差均为 198.6 mm。拆分字段后，两边都在以 100 Hz 发送同样的 301 帧后达到了 30 mm 的容差要求。
+
+Isaac Sim 对照试验使用相同的 100 Hz 轨迹，并在终点续发 3 s。稳态位置误差取双臂中较大的一侧。
+
+| ServoP 目标 | 原版 LimX 前馈 | 加入 PhysX 重力补偿 |
+| --- | --- | --- |
+| `SP_TRACK` | 12.56 mm | 0.0048 mm |
+| 从准备姿态双臂各向前 25 mm | 9.59 mm | 0.0109 mm |
+
+另一次独立运行的 0.1 mm 保持检查以 0.0137 mm 通过。
 
 先进入准备姿态后，Isaac Sim 和固定版本的 MuJoCo 基线均通过 300 Hz 套件的 **6/6**。该套件在伺服回到起始位姿后评估精度，100 Hz 的 `SP_TRACK` 用例则在去程目标点评估到达误差。独立 PhysX 冒烟检查确认了全部 16 轴，并跟踪四个命令轴，最大稳态位置误差为 0.0403 rad。
 

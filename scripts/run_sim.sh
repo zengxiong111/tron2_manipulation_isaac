@@ -19,14 +19,14 @@ if [[ -z "${TRON2_OUTER_NETWORK:-}" || $(readlink /proc/self/ns/net) == "$TRON2_
     exit 1
 fi
 isaac_args=()
-if [[ "${1:-}" == --gui ]]; then
-    isaac_args+=(--gui)
+while [[ "${1:-}" == --gui || "${1:-}" == --no-servop-gravity-compensation ]]; do
+    isaac_args+=("$1")
     shift
-fi
+done
 if [[ "${1:-}" == -- ]]; then
     shift
 elif [[ $# != 0 ]]; then
-    echo "usage: $0 [--gui] [-- CLIENT [ARG ...]]" >&2
+    echo "usage: $0 [--gui] [--no-servop-gravity-compensation] [-- CLIENT [ARG ...]]" >&2
     exit 2
 fi
 

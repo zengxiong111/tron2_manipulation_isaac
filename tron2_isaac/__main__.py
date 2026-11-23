@@ -13,6 +13,7 @@ from .model import ASSET_ROOT, MOTOR_NAMES, motor_effort
 
 DEFAULT_RATE = 300.0
 MAX_PHYSICS_DT = 0.001
+SERVOP_FRESHNESS_SEC = 0.1
 
 
 def run_physics_smoke(robot, rate: float) -> None:
@@ -54,11 +55,25 @@ def run_physics_smoke(robot, rate: float) -> None:
         raise SystemExit(1)
 
 
-def run_controller(robot, transport, rate: float, substeps: int, duration: float | None) -> None:
+def servop_gravity_axes(command, now: float) -> np.ndarray:
+    """Select the active ServoP arms for which LimX supplies no feedforward."""
+    if command.servop_at <= 0.0 or not 0.0 <= now - command.servop_at <= SERVOP_FRESHNESS_SEC:
+        return np.zeros(len(MOTOR_NAMES), dtype=bool)
+    has_feedforward = np.any(command.tau[:14].reshape(2, 7) != 0.0, axis=1)
+    arm_axes = np.repeat(~has_feedforward, 7)
+    return np.concatenate((arm_axes, (False, False))) & (command.kp > 0.0)
+
+
+def run_controller(
+    robot, transport, rate: float, substeps: int, duration: float | None,
+    servop_gravity_compensation: bool,
+) -> None:
     dt = 1.0 / rate
     started = deadline = time.monotonic()
     state_frames = 0
     command_steps = 0
+    compensating = False
+    gravity_steps = 0
     print(f"Isaac motor simulation ready: {rate:g} Hz motor loop, {rate * substeps:g} Hz PhysX", flush=True)
     try:
         while robot.is_running() and (duration is None or time.monotonic() - started < duration):
@@ -72,8 +87,17 @@ def run_controller(robot, transport, rate: float, substeps: int, duration: float
                 if not command_steps:
                     print("Received first /motor/cmd", flush=True)
                 command_steps += 1
+                axes = servop_gravity_axes(command, time.monotonic()) if servop_gravity_compensation else None
+                active = axes is not None and bool(axes.any())
+                if active != compensating:
+                    print(f"ServoP gravity compensation {'active' if active else 'inactive'}", flush=True)
+                    compensating = active
+                feedforward = command.tau
+                if active:
+                    feedforward = feedforward + np.where(axes, robot.gravity_effort(), 0.0)
+                    gravity_steps += 1
                 for index in range(substeps):
-                    effort = motor_effort(q, dq, command.q, command.dq, command.tau, command.kp, command.kd)
+                    effort = motor_effort(q, dq, command.q, command.dq, feedforward, command.kp, command.kd)
                     robot.step(effort)
                     if index + 1 < substeps:
                         q, dq, _ = robot.state()
@@ -84,6 +108,7 @@ def run_controller(robot, transport, rate: float, substeps: int, duration: float
         print(json.dumps({
             "state_frames": state_frames,
             "steps_with_motor_command": command_steps,
+            "steps_with_servop_gravity_compensation": gravity_steps,
             "state_rate_hz": state_frames / elapsed,
             "wall_seconds": elapsed,
         }), flush=True)
@@ -97,6 +122,10 @@ def main() -> None:
     parser.add_argument("--rate", type=float, default=DEFAULT_RATE, help="Motor state rate in Hz")
     parser.add_argument("--seconds", type=float, help="Optional controller run duration in wall-clock seconds")
     parser.add_argument("--smoke", action="store_true", help="Test PhysX joint tracking without the controller")
+    parser.add_argument(
+        "--no-servop-gravity-compensation", action="store_true",
+        help="Use only LimX motor feedforward, including during ServoP",
+    )
     args = parser.parse_args()
     for name, value in (("--rate", args.rate), ("--seconds", args.seconds)):
         if value is not None and (not math.isfinite(value) or value <= 0):
@@ -120,7 +149,10 @@ def main() -> None:
                 from .mros import MrosTransport
 
                 with MrosTransport(args.bridge_install.resolve()) as transport:
-                    run_controller(robot, transport, args.rate, substeps, args.seconds)
+                    run_controller(
+                        robot, transport, args.rate, substeps, args.seconds,
+                        not args.no_servop_gravity_compensation,
+                    )
     except KeyboardInterrupt:
         pass
 

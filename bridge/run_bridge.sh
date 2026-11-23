@@ -29,5 +29,5 @@ export MROS_LOCALHOST_ONLY=0
 
 exec ros2 launch mrosbridger mrosbridger.launch.py \
   bridge_ros2mros:=true \
-  mros2ros_include:=/motor/cmd \
+  'mros2ros_include:=/motor/cmd;/move_cmd' \
   ros2mros_include:=/motor/state

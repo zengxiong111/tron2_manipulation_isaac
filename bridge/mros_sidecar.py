@@ -8,6 +8,7 @@ import json
 import math
 import select
 import socket
+import time
 from typing import Sequence
 
 import rclpy
@@ -15,6 +16,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from controller_msgs.msg import JointCmd, JointState
+from std_msgs.msg import Float32MultiArray
 
 
 MOTOR_NAMES = (
@@ -37,6 +39,7 @@ MOTOR_NAMES = (
 )
 MOTOR_COUNT = len(MOTOR_NAMES)
 MAX_FRAME = 64 * 1024
+SERVOP_MOVE_CODE = 3.0
 
 
 def _ordered(values: Sequence[float], names: Sequence[str], label: str) -> list[float]:
@@ -73,6 +76,7 @@ class BridgeNode(Node):
         super().__init__("tron2_isaac_mros_transport")
         self.channel = channel
         self.command_sequence = 0
+        self.servop_at = 0.0
         self.latest_command: dict[str, list[float]] | None = None
         self.tx = bytearray()
         self.pending_command: bytes | None = None
@@ -80,6 +84,15 @@ class BridgeNode(Node):
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
         self.state_pub = self.create_publisher(JointState, "/motor/state", qos)
         self.create_subscription(JointCmd, "/motor/cmd", self._on_command, qos)
+        self.create_subscription(Float32MultiArray, "/move_cmd", self._on_move, qos)
+
+    def _on_move(self, message: Float32MultiArray) -> None:
+        # The pinned DACH runtime publishes [3, left pose (7), right pose (7)].
+        values = message.data
+        if len(values) == 15 and values[0] == SERVOP_MOVE_CODE and all(map(math.isfinite, values)):
+            self.servop_at = time.monotonic()
+        else:
+            self.servop_at = 0.0
 
     def _on_command(self, message: JointCmd) -> None:
         names = list(message.names)
@@ -136,7 +149,7 @@ class BridgeNode(Node):
     def send_command(self) -> None:
         if self.latest_command is None or self.command_sequence == 0:
             return
-        frame = {"type": "command", **self.latest_command}
+        frame = {"type": "command", **self.latest_command, "servop_at": self.servop_at}
         encoded = _encode(frame)
         if self.pending_command is None:
             self.pending_command = encoded

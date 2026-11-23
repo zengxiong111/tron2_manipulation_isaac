@@ -20,6 +20,8 @@ This repository provides an Isaac Sim 5.1 motor simulator for the LimX DACH_TRON
 
 Isaac applies `tau + kp * (q_target - q) + kd * (dq_target - dq)` at each physics substep. At the default 300 Hz motor rate, four PhysX substeps keep the integration interval below 1 ms. PhysX reports joint position, velocity and effort. The initial pose is the upstream SDK's `DEFAULT_HOME_Q16` pose. Vendor assets and binaries are external dependencies.
 
+During ServoP, Isaac computes gravity compensation from the articulation's current pose at each motor update. It adds the result to the powered joints of each arm whose controller feedforward vector is zero. The LimX `/move_cmd` ServoP event enables compensation for 100 ms, and each new ServoP sample refreshes that window. Keep sending the final target while holding a pose. [PhysX articulation gravity API](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/py/source/extensions/isaacsim.core.prims/docs/index.html#isaacsim.core.prims.Articulation.get_generalized_gravity_forces)
+
 ## PhysX quick start
 
 Run the commands from this repository's root on an Isaac Sim host. `ISAAC_PYTHON` is the Python launcher for your Isaac Sim 5.1 install, such as `python.sh` for the standalone installation or the virtual environment's `bin/python` for the pip installation.
@@ -97,6 +99,12 @@ The integrated launcher uses Ubuntu 24.04 amd64, ROS 2 Jazzy, Git LFS and Linux 
      --output-dir "$TRON2_RUN_DIR/sdk-servo"
    ```
 
+6. From the repository root, run the ServoP steady-state check with the SDK Python environment active. It streams the upstream `SP_TRACK` trajectory at 100 Hz, keeps sending the final target for 3 s, and checks the final SDK position error against 0.1 mm. Add `--no-servop-gravity-compensation` before `--` to run the same check with the LimX feedforward alone.
+
+   ```bash
+   ./scripts/run_sim.sh -- python3 tests/check_servop_hold.py
+   ```
+
 ## Verification and scope
 
 On Ubuntu 24.04 with Isaac Sim 5.1.0 and an RTX 5080, the upstream default SDK suite passed preflight and all five motion cases through the SDK entry. The pinned MuJoCo reference also passed all five with the corrected ServoP fields. Both runs used the upstream targets, send rates and accuracy limits.
@@ -105,11 +113,20 @@ On Ubuntu 24.04 with Isaac Sim 5.1.0 and an RTX 5080, the upstream default SDK s
 | --- | --- | --- |
 | `H_SAFE` · MoveH | Pass | Pass |
 | `J_PREP` · MoveJ | Pass | Pass |
-| `P_REACHABLE` · MoveP | Pass · 12.9 mm position error | Pass · 12.7 mm position error |
+| `P_REACHABLE` · MoveP | Pass · 14.1 mm position error | Pass · 12.7 mm position error |
 | `SJ_TRACK` · ServoJ | Pass | Pass |
-| `SP_TRACK` · ServoP | Pass · 25.1 mm position error | Pass · 20.3 mm position error |
+| `SP_TRACK` · ServoP | Pass · 12.5 mm arrival error | Pass · 20.3 mm arrival error |
 
 The pose errors come from the SDK's simulated end-effector estimate. With the upstream client's packed `data.pos` field, both simulators previously reported a 198.6 mm `SP_TRACK` error. With split fields, both stayed within the 30 mm tolerance after the same 301 packets at 100 Hz.
+
+In the Isaac Sim A/B run, the same 100 Hz trajectories held their final targets for 3 s. Reported steady-state position error is the larger of the two arm errors.
+
+| ServoP target | LimX feedforward alone | With PhysX gravity compensation |
+| --- | --- | --- |
+| `SP_TRACK` | 12.56 mm | 0.0048 mm |
+| Both arms 25 mm forward from the prepared pose | 9.59 mm | 0.0109 mm |
+
+The standalone 0.1 mm hold check ended at 0.0137 mm in a separate run.
 
 Isaac Sim and the pinned MuJoCo reference each passed **6/6** cases in the prepared 300 Hz suite. That suite scores servo pose accuracy after return to the starting pose. The 100 Hz `SP_TRACK` case scores arrival at the commanded outbound target. The standalone PhysX smoke confirmed all 16 joints and tracked four commanded axes with a maximum steady-state position error of 0.0403 rad.
 

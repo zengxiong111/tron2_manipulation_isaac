@@ -179,6 +179,14 @@ class IsaacRobot:
         effort = np.asarray(robot.get_measured_joint_efforts()[indices], dtype=np.float64).copy()
         return q, dq, effort
 
+    def gravity_effort(self) -> np.ndarray:
+        """Return PhysX's gravity compensation torque for the current configuration."""
+        robot, indices = self._require_ready()
+        efforts = robot._articulation_view.get_generalized_gravity_forces(
+            joint_indices=indices, clone=False
+        )
+        return np.asarray(efforts[0], dtype=np.float64)
+
     def step(self, effort: np.ndarray) -> None:
         """Apply one saturated motor-effort vector and advance one physics step."""
         robot, indices = self._require_ready()

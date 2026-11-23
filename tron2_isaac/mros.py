@@ -36,6 +36,7 @@ class MotorCommand:
     tau: np.ndarray
     kp: np.ndarray
     kd: np.ndarray
+    servop_at: float = 0.0
 
 
 class MrosTransport:
@@ -262,4 +263,7 @@ def _command_from_frame(frame: dict[str, object]) -> MotorCommand:
     values = [read(key) for key in ("q", "dq", "tau", "kp", "kd")]
     for value in values:
         value.setflags(write=False)
-    return MotorCommand(*values)
+    servop_at = float(frame.get("servop_at", 0.0))
+    if not np.isfinite(servop_at):
+        raise ValueError("invalid ServoP timestamp received from MROS sidecar")
+    return MotorCommand(*values, servop_at)
