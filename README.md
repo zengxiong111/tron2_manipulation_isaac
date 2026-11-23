@@ -4,6 +4,7 @@ This repository provides an Isaac Sim 5.1 motor simulator for the LimX DACH_TRON
 
 ## Contents
 
+- [Comparison with MuJoCo](#comparison-with-mujoco)
 - [Components](#components)
 - [PhysX quick start](#physx-quick-start)
 - [Controller integration](#controller-integration)
@@ -11,6 +12,21 @@ This repository provides an Isaac Sim 5.1 motor simulator for the LimX DACH_TRON
   - [Long motion and VLA playback](#long-motion-and-vla-playback)
   - [Matched motion traces](#matched-motion-traces)
   - [Motor stream timing](#motor-stream-timing)
+
+## Comparison with MuJoCo
+
+Both versions run the same DACH_TRON2A controller and pass the default SDK, prepared servo, long-motion and VLA suites in headless simulation. Isaac motor state reached 296.98–297.91 Hz against the 300 Hz target. [LimX MuJoCo runtime](https://github.com/limxdynamics/tron2_manipulation_controller/blob/10af63c20e0dd2149168c6693453cc28f2c2dcbf/Tron2_simulation_mujoco/README.md)
+
+| Priority | Remaining difference | What to add or verify |
+| --- | --- | --- |
+| First | GUI feedback | Isaac GUI passed the prepared suite 6/6 with state feedback at 62.59 Hz. Separate rendering from motor updates and measure both GUIs with hardware acceleration. |
+| Next | Command timeout | Both hold the last command by default during a connected publication gap. MuJoCo also exposes `--cmd-timeout`. Add the option and test interruption and recovery. |
+| Next | Model selection | MuJoCo's `DACH_TRON2B` preset passed its 16-axis model check. Isaac currently supports `DACH_TRON2A`. Add the B model mapping and validate it with a matching controller configuration. |
+| As needed | Launch options | MuJoCo offers custom model paths, render rate, real-time factor and motor topics. Isaac exposes `--rate` through its Python entry, with fewer options in `run_sim.sh`. |
+
+On the isolated virtual display, MuJoCo used Mesa llvmpipe software rendering. That run measured 2.25 Hz state feedback and passed 2/6 cases. A hardware-accelerated MuJoCo GUI timing baseline is still pending. Isaac controller integration requires a ROS 2 Jazzy bridge, while the MuJoCo simulator speaks MROS directly.
+
+Both shipped simulators cover 16 arm and head axes. The upstream box and tabletop are added for rendering the replay. For a future tabletop scene, resolve the physical base origin from the model transforms and keep `physical_base_z = table_top_z + 0.45` m. [Upstream demo scope](https://github.com/limxdynamics/tron2_manipulation_controller/blob/10af63c20e0dd2149168c6693453cc28f2c2dcbf/README.md#demo)
 
 ## Components
 
@@ -75,13 +91,14 @@ The integrated launcher uses Ubuntu 24.04 amd64, ROS 2 Jazzy, Git LFS and Linux 
    export TRON2_EXTRA_LIB_DIR="$HOME/tron2-controller-runtime/usr/lib/x86_64-linux-gnu"
    ```
 
-3. Launch the headless simulator, official controller and joystick mode switch. The launcher opens a shell inside the isolated namespace after the WebSocket handshake. Exit that shell to stop the run. Add `--gui` to view the Isaac scene. The launcher prints `TRON2_RUN_DIR`, an external temporary directory for process logs and SDK results.
+3. Activate a separate Python environment with pip for the SDK, install its dependencies, and launch the simulator, controller and joystick mode switch. After the WebSocket handshake the launcher opens an isolated shell. Exit that shell to stop the run. Add `--gui` to view the scene. Logs and SDK results can go in the external `TRON2_RUN_DIR` printed at startup.
 
    ```bash
+   python3 -m pip install -r "$TRON2_UPSTREAM/Tron2_arm_tests/requirements.txt"
    ./scripts/run_sim.sh
    ```
 
-4. Run the SDK smoke suite from this repository's root in the isolated shell, using a Python environment with `Tron2_arm_tests/requirements.txt` installed. The SDK entry splits the upstream test's 14-value `ServoP` pose into the controller's two seven-value fields, `data.left_pos` and `data.right_pos`. Send those fields when using a separate WebSocket client. The launcher also accepts `-- CLIENT [ARG ...]` to run a client without the interactive shell.
+4. Run the SDK smoke suite from this repository's root in the isolated shell. The SDK entry splits the ServoP target into `data.left_pos` and `data.right_pos`, seven values per arm. Use those fields in a custom client. The launcher also accepts `-- CLIENT [ARG ...]`.
 
    ```bash
    python3 -m tron2_isaac.sdk --output-dir "$TRON2_RUN_DIR/sdk"
@@ -123,32 +140,18 @@ The integrated launcher uses Ubuntu 24.04 amd64, ROS 2 Jazzy, Git LFS and Linux 
 
 ## Verification and scope
 
-On Ubuntu 24.04 with Isaac Sim 5.1.0 and an RTX 5080, the upstream default SDK suite passed preflight and all five motion cases through the SDK entry. The pinned MuJoCo reference also passed all five with the corrected ServoP fields. Both runs used the upstream targets, send rates and accuracy limits.
+The suites ran on Ubuntu 24.04 with Isaac Sim 5.1.0 and an RTX 5080. Both headless simulators used the same upstream motion targets, send rates and tolerances.
 
-| SDK case | Isaac Sim | Upstream MuJoCo |
-| --- | --- | --- |
-| `H_SAFE` · MoveH | Pass | Pass |
-| `J_PREP` · MoveJ | Pass | Pass |
-| `P_REACHABLE` · MoveP | Pass · 13.2 mm position error | Pass · 12.7 mm position error |
-| `SJ_TRACK` · ServoJ | Pass | Pass |
-| `SP_TRACK` · ServoP | Pass · 8.22 mm arrival error | Pass · 20.3 mm arrival error |
+| SDK result | MuJoCo | Isaac Sim |
+| --- | ---: | ---: |
+| Default motion cases | 5/5 | 5/5 |
+| Prepared 300 Hz servo cases | 6/6 | 6/6 |
+| `P_REACHABLE` MoveP arrival error | 12.7 mm | 13.2 mm |
+| `SP_TRACK` ServoP arrival error | 20.3 mm | 8.22 mm |
 
-The pose errors come from the SDK's simulated end-effector estimate. With the upstream client's packed `data.pos` field, both simulators previously reported a 198.6 mm `SP_TRACK` error. With split fields, both stayed within the 30 mm tolerance after the same 301 packets at 100 Hz.
+The SDK reports simulated end-effector positions. With the packed `data.pos` field, `SP_TRACK` previously reported 198.6 mm on both engines. Splitting the fields brought both within 30 mm after 301 sends at 100 Hz. The prepared 300 Hz suite scores the return to the start pose. `SP_TRACK` scores the outbound target.
 
-In the Isaac Sim A/B run, the same 100 Hz trajectories held their final targets for 3 s. Reported steady-state position error is the larger of the two arm errors.
-
-| ServoP target | LimX feedforward alone | With PhysX gravity compensation |
-| --- | --- | --- |
-| `SP_TRACK` | 12.56 mm | 0.0048 mm |
-| Both arms 25 mm forward from the prepared pose | 9.59 mm | 0.0109 mm |
-
-With the current headless motor loop, the standalone 0.1 mm hold check passed at 0.0224 mm.
-
-Isaac Sim and the pinned MuJoCo reference each passed **6/6** cases in the prepared 300 Hz suite. That suite scores servo pose accuracy after return to the starting pose. The 100 Hz `SP_TRACK` case scores arrival at the commanded outbound target. The standalone PhysX smoke confirmed all 16 joints and tracked four commanded axes with a maximum steady-state position error of 0.0403 rad.
-
-The shipped scene exercises arm and head control. The imported gripper geometry is rigid, so the scene has no actuated fingers or object manipulation. It has no tabletop. For any TRON2 tabletop extension, resolve the physical base origin from the model's authored transforms and keep `physical_base_z = table_top_z + 0.45` m.
-
-The Isaac GUI rendered the robot and passed the standalone PhysX smoke check. The integrated GUI also passed the prepared six-case SDK servo suite, including two ServoJ and two ServoP cases. The SDK sent all planned commands at about 300 Hz. In the same 20 s GUI capture, observed motor state arrived at 62.59 Hz while rendering.
+In an Isaac A/B test, holding the target for 3 s with PhysX gravity compensation reduced `SP_TRACK` error from 12.56 to 0.0048 mm. A second target, 25 mm forward per arm, improved from 9.59 to 0.0109 mm. These errors use the larger of the two arm measurements. The latest standalone hold check measured 0.0224 mm against a 0.1 mm limit. The PhysX smoke check confirmed all 16 joints and measured a maximum steady-state error of 0.0403 rad across four commanded axes.
 
 ### Long motion and VLA playback
 
@@ -201,7 +204,7 @@ Run the read-only timing observer inside the isolated simulation session. It rec
 '
 ```
 
-The timings include callback scheduling and any bridge in the capture path. Arrival gaps can estimate missed periods. Exact drop counts require a sequence number, which these messages lack. Isaac holds the last command during a publication gap while the transport stays connected. The observer uses a 20 ms threshold for reporting message age. The CPU CI workflow runs `python -m unittest discover -s tests -p 'test_*.py' -v` without Isaac Sim or ROS.
+The timings include bridge and callback scheduling. The observer reports gaps and counts messages older than 20 ms. The motor messages lack sequence numbers for counting exact drops. CPU CI runs `python -m unittest discover -s tests -p 'test_*.py' -v` without Isaac Sim or ROS.
 
 In 20 s headless captures of the same prepared SDK servo suite, MuJoCo and Isaac passed all six SDK cases. Isaac state delivery rose from 85.15 Hz to 296.98–297.91 Hz after skipping per-substep USD writeback. The 50.00 s Isaac session containing the second capture counted 14,923 state frames in the motor loop, or 298.45 Hz. The default target is 300 Hz.
 

@@ -4,6 +4,7 @@
 
 ## 目录
 
+- [与 MuJoCo 对比](#与-mujoco-对比)
 - [组件](#组件)
 - [PhysX 快速开始](#physx-快速开始)
 - [控制器联调](#控制器联调)
@@ -11,6 +12,21 @@
   - [长轨迹与 VLA 回放](#长轨迹与-vla-回放)
   - [同条件轨迹对照](#同条件轨迹对照)
   - [电机流时序](#电机流时序)
+
+## 与 MuJoCo 对比
+
+两边运行同一套 DACH_TRON2A 控制器，无界面下均通过默认 SDK、带准备动作的伺服套件、长轨迹和 VLA。Isaac 电机状态反馈实测 296.98–297.91 Hz，目标为 300 Hz。[LimX MuJoCo 运行包](https://github.com/limxdynamics/tron2_manipulation_controller/blob/10af63c20e0dd2149168c6693453cc28f2c2dcbf/Tron2_simulation_mujoco/README.md)
+
+| 优先级 | 差距 | 待补充或验证 |
+| --- | --- | --- |
+| 优先 | GUI 反馈频率 | Isaac GUI 通过了带准备动作的套件 6/6，状态反馈实测 62.59 Hz。将渲染与电机更新解耦，并在硬件加速条件下重测两边。 |
+| 其次 | 指令超时 | 通信仍连接但暂时没有新指令时，两边默认保持上一条指令。MuJoCo 还提供 `--cmd-timeout`。补充该选项，并验证断流与恢复。 |
+| 其次 | 模型选择 | MuJoCo 的 `DACH_TRON2B` 预设已通过 16 轴模型检查。Isaac 当前支持 `DACH_TRON2A`。补充 B 的模型映射，并用对应控制器配置联调。 |
+| 按需 | 启动选项 | MuJoCo 支持自定义模型路径、渲染频率、实时倍率和电机话题。Isaac 的 Python 入口提供 `--rate`，`run_sim.sh` 的选项较少。 |
+
+在隔离虚拟显示器上补跑时，MuJoCo 使用 Mesa llvmpipe 软件渲染，状态反馈为 2.25 Hz，伺服套件通过 2/6。硬件加速条件下的 MuJoCo GUI 时序基线待测。Isaac 控制器联调需要 ROS 2 Jazzy 桥，MuJoCo 仿真器直接使用 MROS。
+
+两边交付的仿真均覆盖双臂和头部的 16 个电机轴。原版演示中的桌面和箱子是在回放渲染时加入的。后续如扩展桌面场景，按模型变换确定物理底座原点，并保持 `physical_base_z = table_top_z + 0.45` m。[原版演示范围](https://github.com/limxdynamics/tron2_manipulation_controller/blob/10af63c20e0dd2149168c6693453cc28f2c2dcbf/README.md#demo)
 
 ## 组件
 
@@ -75,13 +91,14 @@ ServoP 运行时，Isaac 在每次电机更新时按机构当前姿态计算重�
    export TRON2_EXTRA_LIB_DIR="$HOME/tron2-controller-runtime/usr/lib/x86_64-linux-gnu"
    ```
 
-3. 启动无界面仿真、官方控制器和模拟手柄模式切换。WebSocket 握手通过后，启动脚本会在隔离命名空间内打开一个 shell。退出该 shell 即停止本次运行。附加 `--gui` 可查看 Isaac 场景。启动脚本会打印仓库外的临时目录 `TRON2_RUN_DIR`，用于保存进程日志和 SDK 结果。
+3. 激活带 pip 的独立 SDK Python 环境，安装依赖，再启动仿真、控制器和模拟手柄模式切换。WebSocket 握手后会打开隔离 shell，退出该 shell 即停止运行。附加 `--gui` 可查看场景。日志和 SDK 结果可写入启动时打印的仓库外目录 `TRON2_RUN_DIR`。
 
    ```bash
+   python3 -m pip install -r "$TRON2_UPSTREAM/Tron2_arm_tests/requirements.txt"
    ./scripts/run_sim.sh
    ```
 
-4. 在隔离 shell 内，从本仓库根目录用已安装 `Tron2_arm_tests/requirements.txt` 的 Python 环境运行 SDK 冒烟用例。SDK 入口会将上游用例的 14 值 `ServoP` 位姿拆为控制器接收的两个 7 值字段 `data.left_pos` 和 `data.right_pos`。使用其他 WebSocket 客户端时直接发送这两个字段。启动脚本也接受 `-- CLIENT [ARG ...]`，可跳过交互 shell 直接运行客户端。
+4. 在隔离 shell 内，从本仓库根目录运行 SDK 冒烟用例。SDK 入口将 ServoP 目标拆成 `data.left_pos` 和 `data.right_pos`，每个字段 7 个值。自定义客户端也使用这两个字段。启动脚本也接受 `-- CLIENT [ARG ...]`。
 
    ```bash
    python3 -m tron2_isaac.sdk --output-dir "$TRON2_RUN_DIR/sdk"
@@ -123,32 +140,18 @@ ServoP 运行时，Isaac 在每次电机更新时按机构当前姿态计算重�
 
 ## 验证与范围
 
-在 Ubuntu 24.04、Isaac Sim 5.1.0 和 RTX 5080 上，通过本仓库的 SDK 入口运行上游默认套件，预检和 5 个运动用例全部通过。固定版本的 MuJoCo 基线采用修正后的 ServoP 字段，也通过了全部 5 个用例。两次运行均沿用上游目标、发送频率和精度阈值。
+测试环境为 Ubuntu 24.04、Isaac Sim 5.1.0 和 RTX 5080。两边无界面测试采用相同的上游运动目标、发送频率和容差。
 
-| SDK 用例 | Isaac Sim | 上游 MuJoCo |
-| --- | --- | --- |
-| `H_SAFE` · MoveH | 通过 | 通过 |
-| `J_PREP` · MoveJ | 通过 | 通过 |
-| `P_REACHABLE` · MoveP | 通过 · 位置误差 13.2 mm | 通过 · 位置误差 12.7 mm |
-| `SJ_TRACK` · ServoJ | 通过 | 通过 |
-| `SP_TRACK` · ServoP | 通过 · 到达误差 8.22 mm | 通过 · 到达误差 20.3 mm |
+| SDK 测试结果 | MuJoCo | Isaac Sim |
+| --- | ---: | ---: |
+| 默认运动用例 | 5/5 | 5/5 |
+| 带准备动作的 300 Hz 伺服用例 | 6/6 | 6/6 |
+| `P_REACHABLE` MoveP 到达误差 | 12.7 mm | 13.2 mm |
+| `SP_TRACK` ServoP 到达误差 | 20.3 mm | 8.22 mm |
 
-表中的位姿误差来自 SDK 的仿真末端估计。此前使用上游客户端的合并字段 `data.pos` 时，两种仿真器的 `SP_TRACK` 误差均为 198.6 mm。拆分字段后，两边都在以 100 Hz 发送同样的 301 帧后达到了 30 mm 的容差要求。
+末端位置取 SDK 的仿真回读。此前使用合并字段 `data.pos` 时，两边的 `SP_TRACK` 误差均为 198.6 mm。拆分字段后，以 100 Hz 发送 301 次，两边都达到 30 mm 容差。带准备动作的 300 Hz 套件评估回到起点的误差，`SP_TRACK` 评估去程到达误差。
 
-Isaac Sim 对照试验使用相同的 100 Hz 轨迹，并在终点续发 3 s。稳态位置误差取双臂中较大的一侧。
-
-| ServoP 目标 | 原版 LimX 前馈 | 加入 PhysX 重力补偿 |
-| --- | --- | --- |
-| `SP_TRACK` | 12.56 mm | 0.0048 mm |
-| 从准备姿态双臂各向前 25 mm | 9.59 mm | 0.0109 mm |
-
-当前无界面电机循环通过了独立的 0.1 mm 保持检查，实测误差为 0.0224 mm。
-
-先进入准备姿态后，Isaac Sim 和固定版本的 MuJoCo 基线均通过 300 Hz 套件的 **6/6**。该套件在伺服回到起始位姿后评估精度，100 Hz 的 `SP_TRACK` 用例则在去程目标点评估到达误差。独立 PhysX 冒烟检查确认了全部 16 轴，并跟踪四个命令轴，最大稳态位置误差为 0.0403 rad。
-
-当前场景用于双臂和头部控制。导入的夹爪为刚性几何体，场景不包含可驱动手指或物体操作。场景没有桌面。后续扩展 TRON2 桌面场景时，须按模型原始变换定位物理底座原点，并保持 `physical_base_z = table_top_z + 0.45` m。
-
-Isaac GUI 已渲染机器人，并通过独立 PhysX 冒烟检查。GUI 联调也通过了带准备动作的 6 个 SDK 伺服用例，其中包括两个 ServoJ 和两个 ServoP。SDK 以约 300 Hz 发送了全部计划指令。同一轮 20 s GUI 采集中，渲染开启时观测到的电机状态到达频率为 62.59 Hz。
+Isaac 的 A/B 测试在终点保持 3 s。开启 PhysX 重力补偿后，`SP_TRACK` 的误差从 12.56 降到 0.0048 mm。双臂各向前 25 mm 的另一个目标从 9.59 降到 0.0109 mm。误差取双臂中较大的一侧。最近一次独立保持检查测得 0.0224 mm，通过 0.1 mm 门槛。PhysX 冒烟检查确认了 16 个关节，四个受控轴的最大稳态误差为 0.0403 rad。
 
 ### 长轨迹与 VLA 回放
 
@@ -201,7 +204,7 @@ Isaac GUI 已渲染机器人，并通过独立 PhysX 冒烟检查。GUI 联调�
 '
 ```
 
-时序测量包含回调调度和采集链路上的桥接开销。可用到达间隔估计缺失的周期，精确丢包计数需要消息序列号，而这些消息未提供序列号。通信仍连接但暂时没有新指令时，Isaac 沿用上一条指令。观察器使用 20 ms 阈值统计消息到达时的年龄。CPU CI 通过 `python -m unittest discover -s tests -p 'test_*.py' -v` 运行，无需 Isaac Sim 或 ROS。
+时序测量包含桥接开销和回调调度。观察器报告到达间隔，并统计消息年龄超过 20 ms 的样本。电机消息缺少用于精确统计丢包的序列号。CPU CI 运行 `python -m unittest discover -s tests -p 'test_*.py' -v`，无需 Isaac Sim 或 ROS。
 
 在 20 s 的无界面采集中，MuJoCo 和 Isaac 均通过同一套准备版 SDK 伺服套件的 6 个用例。关闭每个子步的 USD 回写后，Isaac 状态到达频率从 85.15 Hz 提升到 296.98–297.91 Hz。第二次采集所在的 Isaac 会话运行了 50.00 s，电机循环记录了 14,923 帧状态，即 298.45 Hz。默认目标为 300 Hz。
 
