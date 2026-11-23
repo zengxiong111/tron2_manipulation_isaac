@@ -66,14 +66,13 @@ The integrated launcher uses Ubuntu 24.04 amd64, ROS 2 Jazzy, Git LFS and Linux 
    ./scripts/run_sim.sh
    ```
 
-4. Run the upstream SDK smoke suite in the isolated shell using a Python environment with `Tron2_arm_tests/requirements.txt` installed. The command reads actual PhysX joint state through the upstream controller. The launcher also accepts `-- CLIENT [ARG ...]` to run a client without the interactive shell.
+4. Run the SDK smoke suite from this repository's root in the isolated shell, using a Python environment with `Tron2_arm_tests/requirements.txt` installed. The SDK entry splits the upstream test's 14-value `ServoP` pose into the controller's two seven-value fields, `data.left_pos` and `data.right_pos`. Send those fields when using a separate WebSocket client. The launcher also accepts `-- CLIENT [ARG ...]` to run a client without the interactive shell.
 
    ```bash
-   cd "$TRON2_UPSTREAM/Tron2_arm_tests"
-   python3 -m dual_arm_protocol_tests --output-dir "$TRON2_RUN_DIR/sdk"
+   python3 -m tron2_isaac.sdk --output-dir "$TRON2_RUN_DIR/sdk"
    ```
 
-5. To reproduce the 300 Hz servo check, start a fresh session and run the commands below from `$TRON2_UPSTREAM/Tron2_arm_tests`. They add the upstream `H_SAFE` and `J_PREP` cases before the four servo targets to reach their required starting pose. The ServoJ and ServoP targets and accuracy limits come from the upstream suite.
+5. To reproduce the 300 Hz servo check, start a fresh session and run the commands below from this repository's root. They add the upstream `H_SAFE` and `J_PREP` cases before the four servo targets to reach their required starting pose. The ServoJ and ServoP targets and accuracy limits come from the upstream suite.
 
    ```bash
    python3 - <<'PY'
@@ -83,15 +82,16 @@ The integrated launcher uses Ubuntu 24.04 amd64, ROS 2 Jazzy, Git LFS and Linux 
    import yaml
 
    run = Path(os.environ['TRON2_RUN_DIR'])
-   servo = yaml.safe_load(Path('config/servo_cases.yaml').read_text())
-   smoke = yaml.safe_load(Path('config/test_cases.yaml').read_text())
+   config = Path(os.environ['TRON2_UPSTREAM']) / 'Tron2_arm_tests/config'
+   servo = yaml.safe_load((config / 'servo_cases.yaml').read_text())
+   smoke = yaml.safe_load((config / 'test_cases.yaml').read_text())
    servo['cases'] = [case for case in smoke['cases'] if case['id'] in ('H_SAFE', 'J_PREP')]
-   defaults = yaml.safe_load(Path('config/default.yaml').read_text())
+   defaults = yaml.safe_load((config / 'default.yaml').read_text())
    defaults['safety']['stop_on_failure'] = False
    (run / 'servo-prepared.yaml').write_text(yaml.safe_dump(servo))
    (run / 'sdk-continue.yaml').write_text(yaml.safe_dump(defaults))
    PY
-   python3 -m dual_arm_protocol_tests \
+   python3 -m tron2_isaac.sdk \
      --cases "$TRON2_RUN_DIR/servo-prepared.yaml" \
      --config "$TRON2_RUN_DIR/sdk-continue.yaml" \
      --output-dir "$TRON2_RUN_DIR/sdk-servo"
@@ -99,18 +99,18 @@ The integrated launcher uses Ubuntu 24.04 amd64, ROS 2 Jazzy, Git LFS and Linux 
 
 ## Verification and scope
 
-On Ubuntu 24.04, Isaac Sim 5.1.0 and RTX 5080, the upstream default SDK suite passed preflight and 4 of 5 motion cases. The pinned MuJoCo reference passed the same four cases. Both runs used the upstream cases and thresholds unchanged.
+On Ubuntu 24.04 with Isaac Sim 5.1.0 and an RTX 5080, the upstream default SDK suite passed preflight and all five motion cases through the SDK entry. The pinned MuJoCo reference also passed all five with the corrected ServoP fields. Both runs used the upstream targets, send rates and accuracy limits.
 
 | SDK case | Isaac Sim | Upstream MuJoCo |
 | --- | --- | --- |
 | `H_SAFE` · MoveH | Pass | Pass |
 | `J_PREP` · MoveJ | Pass | Pass |
-| `P_REACHABLE` · MoveP | Pass · 16.2 mm position error | Pass · 15.0 mm position error |
+| `P_REACHABLE` · MoveP | Pass · 12.9 mm position error | Pass · 12.7 mm position error |
 | `SJ_TRACK` · ServoJ | Pass | Pass |
-| `SP_TRACK` · ServoP | Fail · 198.6 mm position error | Fail · 198.6 mm position error |
+| `SP_TRACK` · ServoP | Pass · 25.1 mm position error | Pass · 20.3 mm position error |
 
-The reported pose errors are the SDK's simulated end-effector estimates. The default ServoP case sent 301 packets in each simulator, and both exceeded the 30 mm position tolerance.
+The pose errors come from the SDK's simulated end-effector estimate. With the upstream client's packed `data.pos` field, both simulators previously reported a 198.6 mm `SP_TRACK` error. With split fields, both stayed within the 30 mm tolerance after the same 301 packets at 100 Hz.
 
-Isaac Sim and the pinned MuJoCo reference each passed **6/6** cases in the prepared 300 Hz suite, including two ServoJ and two ServoP cases. The standalone PhysX smoke confirmed all 16 joints and tracked four commanded axes with a maximum steady-state position error of 0.0403 rad.
+Isaac Sim and the pinned MuJoCo reference each passed **6/6** cases in the prepared 300 Hz suite. That suite scores servo pose accuracy after return to the starting pose. The 100 Hz `SP_TRACK` case scores arrival at the commanded outbound target. The standalone PhysX smoke confirmed all 16 joints and tracked four commanded axes with a maximum steady-state position error of 0.0403 rad.
 
 The shipped scene exercises arm and head control. The imported gripper geometry is rigid, so the scene has no actuated fingers or object manipulation. It has no tabletop. For any TRON2 tabletop extension, resolve the physical base origin from the model's authored transforms and keep `physical_base_z = table_top_z + 0.45` m.

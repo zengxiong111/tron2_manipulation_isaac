@@ -66,14 +66,13 @@ Isaac 在每个物理子步施加 `tau + kp * (q_target - q) + kd * (dq_target -
    ./scripts/run_sim.sh
    ```
 
-4. 在隔离 shell 内，用已经安装 `Tron2_arm_tests/requirements.txt` 的 Python 环境运行上游 SDK 冒烟用例。命令通过上游控制器读取实际 PhysX 关节状态。启动脚本也接受 `-- CLIENT [ARG ...]`，可跳过交互 shell 直接运行客户端。
+4. 在隔离 shell 内，从本仓库根目录用已安装 `Tron2_arm_tests/requirements.txt` 的 Python 环境运行 SDK 冒烟用例。SDK 入口会将上游用例的 14 值 `ServoP` 位姿拆为控制器接收的两个 7 值字段 `data.left_pos` 和 `data.right_pos`。使用其他 WebSocket 客户端时直接发送这两个字段。启动脚本也接受 `-- CLIENT [ARG ...]`，可跳过交互 shell 直接运行客户端。
 
    ```bash
-   cd "$TRON2_UPSTREAM/Tron2_arm_tests"
-   python3 -m dual_arm_protocol_tests --output-dir "$TRON2_RUN_DIR/sdk"
+   python3 -m tron2_isaac.sdk --output-dir "$TRON2_RUN_DIR/sdk"
    ```
 
-5. 复现 300 Hz 伺服检查时，启动一次新会话，并在 `$TRON2_UPSTREAM/Tron2_arm_tests` 下运行以下命令。在四个伺服目标前加入上游 `H_SAFE` 和 `J_PREP` 用例，使机器人达到所需的起始姿态。ServoJ 和 ServoP 的目标与精度阈值沿用上游套件。
+5. 复现 300 Hz 伺服检查时，启动一次新会话，并在本仓库根目录运行以下命令。在四个伺服目标前加入上游 `H_SAFE` 和 `J_PREP` 用例，使机器人达到所需的起始姿态。ServoJ 和 ServoP 的目标与精度阈值沿用上游套件。
 
    ```bash
    python3 - <<'PY'
@@ -83,15 +82,16 @@ Isaac 在每个物理子步施加 `tau + kp * (q_target - q) + kd * (dq_target -
    import yaml
 
    run = Path(os.environ['TRON2_RUN_DIR'])
-   servo = yaml.safe_load(Path('config/servo_cases.yaml').read_text())
-   smoke = yaml.safe_load(Path('config/test_cases.yaml').read_text())
+   config = Path(os.environ['TRON2_UPSTREAM']) / 'Tron2_arm_tests/config'
+   servo = yaml.safe_load((config / 'servo_cases.yaml').read_text())
+   smoke = yaml.safe_load((config / 'test_cases.yaml').read_text())
    servo['cases'] = [case for case in smoke['cases'] if case['id'] in ('H_SAFE', 'J_PREP')]
-   defaults = yaml.safe_load(Path('config/default.yaml').read_text())
+   defaults = yaml.safe_load((config / 'default.yaml').read_text())
    defaults['safety']['stop_on_failure'] = False
    (run / 'servo-prepared.yaml').write_text(yaml.safe_dump(servo))
    (run / 'sdk-continue.yaml').write_text(yaml.safe_dump(defaults))
    PY
-   python3 -m dual_arm_protocol_tests \
+   python3 -m tron2_isaac.sdk \
      --cases "$TRON2_RUN_DIR/servo-prepared.yaml" \
      --config "$TRON2_RUN_DIR/sdk-continue.yaml" \
      --output-dir "$TRON2_RUN_DIR/sdk-servo"
@@ -99,18 +99,18 @@ Isaac 在每个物理子步施加 `tau + kp * (q_target - q) + kd * (dq_target -
 
 ## 验证与范围
 
-在 Ubuntu 24.04、Isaac Sim 5.1.0 和 RTX 5080 上，上游默认 SDK 套件通过预检和 5 个运动用例中的 4 个。固定版本的 MuJoCo 基线通过了相同的 4 个用例。两次运行均沿用上游用例和阈值。
+在 Ubuntu 24.04、Isaac Sim 5.1.0 和 RTX 5080 上，通过本仓库的 SDK 入口运行上游默认套件，预检和 5 个运动用例全部通过。固定版本的 MuJoCo 基线采用修正后的 ServoP 字段，也通过了全部 5 个用例。两次运行均沿用上游目标、发送频率和精度阈值。
 
 | SDK 用例 | Isaac Sim | 上游 MuJoCo |
 | --- | --- | --- |
 | `H_SAFE` · MoveH | 通过 | 通过 |
 | `J_PREP` · MoveJ | 通过 | 通过 |
-| `P_REACHABLE` · MoveP | 通过 · 位置误差 16.2 mm | 通过 · 位置误差 15.0 mm |
+| `P_REACHABLE` · MoveP | 通过 · 位置误差 12.9 mm | 通过 · 位置误差 12.7 mm |
 | `SJ_TRACK` · ServoJ | 通过 | 通过 |
-| `SP_TRACK` · ServoP | 未通过 · 位置误差 198.6 mm | 未通过 · 位置误差 198.6 mm |
+| `SP_TRACK` · ServoP | 通过 · 位置误差 25.1 mm | 通过 · 位置误差 20.3 mm |
 
-表中的位姿误差来自 SDK 的仿真末端估计。默认 ServoP 用例在两种仿真器中各发送了 301 个数据包，两边都超过 30 mm 的位置容差。
+表中的位姿误差来自 SDK 的仿真末端估计。此前使用上游客户端的合并字段 `data.pos` 时，两种仿真器的 `SP_TRACK` 误差均为 198.6 mm。拆分字段后，两边都在以 100 Hz 发送同样的 301 帧后达到了 30 mm 的容差要求。
 
-先进入准备姿态后，Isaac Sim 和固定版本的 MuJoCo 基线均通过 300 Hz 套件的 **6/6**，包括两个 ServoJ 和两个 ServoP 用例。独立 PhysX 冒烟检查确认了全部 16 轴，并跟踪四个命令轴，最大稳态位置误差为 0.0403 rad。
+先进入准备姿态后，Isaac Sim 和固定版本的 MuJoCo 基线均通过 300 Hz 套件的 **6/6**。该套件在伺服回到起始位姿后评估精度，100 Hz 的 `SP_TRACK` 用例则在去程目标点评估到达误差。独立 PhysX 冒烟检查确认了全部 16 轴，并跟踪四个命令轴，最大稳态位置误差为 0.0403 rad。
 
 当前场景用于双臂和头部控制。导入的夹爪为刚性几何体，场景不包含可驱动手指或物体操作。场景没有桌面。后续扩展 TRON2 桌面场景时，须按模型原始变换定位物理底座原点，并保持 `physical_base_z = table_top_z + 0.45` m。
