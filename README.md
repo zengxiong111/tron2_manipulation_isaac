@@ -8,6 +8,9 @@ This repository provides an Isaac Sim 5.1 motor simulator for the LimX DACH_TRON
 - [PhysX quick start](#physx-quick-start)
 - [Controller integration](#controller-integration)
 - [Verification and scope](#verification-and-scope)
+  - [Long motion and VLA playback](#long-motion-and-vla-playback)
+  - [Matched motion traces](#matched-motion-traces)
+  - [Motor stream timing](#motor-stream-timing)
 
 ## Components
 
@@ -40,6 +43,14 @@ Run the commands from this repository's root on an Isaac Sim host. `ISAAC_PYTHON
    ```
 
    A passing run prints `"physics_smoke": "passed"` with measured joint positions and tracking error.
+
+3. Check the pinned URDF and MJCF metadata and the imported PhysX articulation without starting the controller. Compare wire order, signed source axes, joint limits, motor effort limits, rotor inertia, mesh paths, the home state and an effort probe. The JSON also reports the root world positions for comparison with the native MuJoCo scene.
+
+   ```bash
+   "$ISAAC_PYTHON" -m tron2_isaac --upstream "$TRON2_UPSTREAM" --check-model
+   ```
+
+   A passing check prints `"model_check": "passed"`. The native MJCF authors `base_Link` at world z = 1.21 m and Isaac places the imported articulation at z = 0 m. SDK pose comparisons use the controller's base frame.
 
 ## Controller integration
 
@@ -74,29 +85,32 @@ The integrated launcher uses Ubuntu 24.04 amd64, ROS 2 Jazzy, Git LFS and Linux 
    python3 -m tron2_isaac.sdk --output-dir "$TRON2_RUN_DIR/sdk"
    ```
 
-5. To reproduce the 300 Hz servo check, start a fresh session and run the commands below from this repository's root. They add the upstream `H_SAFE` and `J_PREP` cases before the four servo targets to reach their required starting pose. The ServoJ and ServoP targets and accuracy limits come from the upstream suite.
+5. Run a prepared suite by choosing `servo` for the 300 Hz servo check, `move` for the full long-motion suite or `vla_servoj` for the timestamped VLA playback. Start a fresh isolated session for each suite. In that session, run the commands below from this repository's root with the SDK Python environment active. `H_SAFE` and `J_PREP` establish the starting pose. The pinned SDK supplies the trajectories, timing and limits. The SDK entry resolves the VLA fixture relative to the pinned SDK checkout when it cannot find it in the working directory.
 
    ```bash
-   python3 - <<'PY'
+   suite=servo
+   python3 - "$suite" <<'PY'
    import os
    from pathlib import Path
+   import sys
 
    import yaml
 
    run = Path(os.environ['TRON2_RUN_DIR'])
    config = Path(os.environ['TRON2_UPSTREAM']) / 'Tron2_arm_tests/config'
-   servo = yaml.safe_load((config / 'servo_cases.yaml').read_text())
+   suite = sys.argv[1]
+   document = yaml.safe_load((config / f'{suite}_cases.yaml').read_text())
    smoke = yaml.safe_load((config / 'test_cases.yaml').read_text())
-   servo['cases'] = [case for case in smoke['cases'] if case['id'] in ('H_SAFE', 'J_PREP')]
+   document['cases'] = [case for case in smoke['cases'] if case['id'] in ('H_SAFE', 'J_PREP')]
    defaults = yaml.safe_load((config / 'default.yaml').read_text())
    defaults['safety']['stop_on_failure'] = False
-   (run / 'servo-prepared.yaml').write_text(yaml.safe_dump(servo))
+   (run / f'{suite}-prepared.yaml').write_text(yaml.safe_dump(document))
    (run / 'sdk-continue.yaml').write_text(yaml.safe_dump(defaults))
    PY
    python3 -m tron2_isaac.sdk \
-     --cases "$TRON2_RUN_DIR/servo-prepared.yaml" \
+     --cases "$TRON2_RUN_DIR/$suite-prepared.yaml" \
      --config "$TRON2_RUN_DIR/sdk-continue.yaml" \
-     --output-dir "$TRON2_RUN_DIR/sdk-servo"
+     --output-dir "$TRON2_RUN_DIR/sdk-$suite"
    ```
 
 6. From the repository root, run the ServoP steady-state check with the SDK Python environment active. It streams the upstream `SP_TRACK` trajectory at 100 Hz, keeps sending the final target for 3 s, and checks the final SDK position error against 0.1 mm. Add `--no-servop-gravity-compensation` before `--` to run the same check with the LimX feedforward alone.
@@ -131,3 +145,65 @@ The standalone 0.1 mm hold check ended at 0.0137 mm in a separate run.
 Isaac Sim and the pinned MuJoCo reference each passed **6/6** cases in the prepared 300 Hz suite. That suite scores servo pose accuracy after return to the starting pose. The 100 Hz `SP_TRACK` case scores arrival at the commanded outbound target. The standalone PhysX smoke confirmed all 16 joints and tracked four commanded axes with a maximum steady-state position error of 0.0403 rad.
 
 The shipped scene exercises arm and head control. The imported gripper geometry is rigid, so the scene has no actuated fingers or object manipulation. It has no tabletop. For any TRON2 tabletop extension, resolve the physical base origin from the model's authored transforms and keep `physical_base_z = table_top_z + 0.45` m.
+
+The Isaac GUI rendered the robot and passed the standalone PhysX smoke check. In an integrated GUI session, the 3 s ServoP case passed with a measured SDK send rate of 299.99 Hz. The GUI ServoJ case stopped at SDK start-pose validation before motion. Use the preparation cases in the integration steps to establish the start pose.
+
+### Long motion and VLA playback
+
+Both simulators used the pinned controller and SDK with the same motion requests. The full Move suite includes two 65 s cases each for MoveJ, MoveH and MoveP. The VLA replay uses 3,138 source frames and 31,371 source-phase SDK sends over 104.57 s. Both engines completed every planned send and had zero hard-limit clamps.
+
+| Result | Upstream MuJoCo | Isaac Sim |
+| --- | --- | --- |
+| Long Move SDK cases, including preparation | 8/8 | 8/8 |
+| Worst SDK MoveP position error across the long cases | 13.72 mm | 12.56 mm |
+| VLA SDK cases, including preparation | 3/3 | 3/3 |
+| VLA total SDK sends, including warmup, transition and return | 32,119/32,119 | 32,120/32,120 |
+| VLA SDK send rate | 300.01 Hz | 300.01 Hz |
+| VLA maximum SDK joint tracking error | 0.000140 rad | 0.000535 rad |
+
+### Matched motion traces
+
+The comparison script sends identical 100 Hz ServoJ and ServoP references to the pinned LimX controller in each simulator. It samples joint position, velocity, effort and controller-reported end-effector pose through a separate SDK connection at 50 Hz. Comparison pairs observations in the same time slot whose local query midpoints are within 10 ms. Segment tracking and endpoint hold error are reported separately. The end-effector estimate uses the controller's base frame.
+
+1. With the SDK Python environment active, capture Isaac from the repository root. The opt-out flag selects the LimX feedforward used for the paired baseline.
+
+   ```bash
+   ./scripts/run_sim.sh --no-servop-gravity-compensation -- \
+     bash -c 'python3 tests/compare_dynamics.py capture isaac "$TRON2_RUN_DIR/isaac-track.json"'
+   ```
+
+2. In the isolated MuJoCo session with the pinned controller in developer mode, set `TRON2_UPSTREAM` to that checkout, `TRON2_ISAAC_REPO` to this repository, and `TRON2_RUN_DIR` to an external output directory. Capture the reference and compare the files offline. Set `MUJOCO_TRACK` and `ISAAC_TRACK` to the captured JSON files.
+
+   ```bash
+   python3 "$TRON2_ISAAC_REPO/tests/compare_dynamics.py" capture mujoco "$TRON2_RUN_DIR/mujoco-track.json"
+   python3 "$TRON2_ISAAC_REPO/tests/compare_dynamics.py" compare "$MUJOCO_TRACK" "$ISAAC_TRACK"
+   ```
+
+| Paired result | MuJoCo | Isaac Sim, ServoP compensation disabled |
+| --- | --- | --- |
+| ServoJ joint tracking P95 during the 3 s ramp | 0.00154 rad | 0.00748 rad |
+| ServoP position tracking P95 during the 3 s ramp | 13.01 mm | 16.49 mm |
+| ServoP position error after the 3 s hold | 12.54 mm | 12.54 mm |
+
+### Motor stream timing
+
+Run the read-only timing observer inside the isolated simulation session. It records callback intervals and compatible source timestamps and writes a JSONL summary per topic. With `--direct-ros2` in Isaac, it observes `/motor/cmd` after the primary MROS-to-ROS 2 bridge and `/motor/state` at the Isaac sidecar publisher. Run it in the native MuJoCo session with `--engine mujoco` and without `--direct-ros2` to observe both native MROS topics through a separate one-way bridge. Set `TRON2_TIMING_ROS_DOMAIN_ID` to an unused domain if the primary bridge uses the observer's default domain 77.
+
+```bash
+./scripts/run_sim.sh -- bash -c '
+  scripts/capture_mros_timing.sh --engine isaac --direct-ros2 \
+    --bridge-install "$TRON2_BRIDGE_INSTALL" \
+    --output "$TRON2_RUN_DIR/motor-timing.jsonl" --seconds 30
+'
+```
+
+The timings include callback scheduling and any bridge in the capture path. Arrival gaps can estimate missed periods. Exact drop counts require a sequence number, which these messages lack. Isaac holds the last command during a publication gap while the transport stays connected. The observer uses a 20 ms threshold for reporting message age. The CPU CI workflow runs `python -m unittest discover -s tests -p 'test_*.py' -v` without Isaac Sim or ROS.
+
+In separate 20 s headless captures with the same prepared SDK servo suite, both engines passed all six SDK cases. The observed command stream ran at about 300 Hz on both engines. Isaac published motor state at 85.15 Hz in this run, below its 300 Hz target. The sidecar publication timestamps showed the same rate.
+
+| Observed stream | MuJoCo arrival rate | Isaac arrival rate | MuJoCo interval P95 | Isaac interval P95 |
+| --- | ---: | ---: | ---: | ---: |
+| `/motor/cmd` | 299.91 Hz | 300.04 Hz | 6.95 ms | 6.95 ms |
+| `/motor/state` | 300.01 Hz | 85.15 Hz | 4.06 ms | 16.63 ms |
+
+The captures observe different points in the bridge paths and give the cadence at those points. Controller-side receive timing remains unmeasured. A standalone headless profile on the same host found a mean of 2.71 ms per PhysX substep. The motor loop performs four substeps per cycle, which limits feedback cadence under this configuration.

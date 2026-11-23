@@ -5,6 +5,17 @@ from pathlib import Path
 import sys
 
 
+def resolve_states_files(cases, sdk_root: Path):
+    """Find pinned playback fixtures when the SDK is launched from this repo."""
+    for case in cases:
+        if "states_file" not in case:
+            continue
+        path = Path(case["states_file"])
+        if not path.is_absolute() and not path.is_file() and (sdk_root / path).is_file():
+            case["states_file"] = str(sdk_root / path)
+    return cases
+
+
 def main() -> int:
     upstream = os.environ.get("TRON2_UPSTREAM")
     if not upstream:
@@ -15,6 +26,11 @@ def main() -> int:
     sys.path.insert(0, str(sdk_root))
 
     from dual_arm_protocol_tests import cli
+
+    upstream_expand_cases = cli.expand_cases
+
+    def expand_cases(document):
+        return resolve_states_files(upstream_expand_cases(document), sdk_root)
 
     class ServoPClient(cli.DualArmProtocolClient):
         def request(self, title, data=None, **kwargs):
@@ -30,6 +46,7 @@ def main() -> int:
     # The pinned CLI constructs the client itself. Substitute its class in this
     # runner process so upstream cases, sampling, and scoring are used directly.
     cli.DualArmProtocolClient = ServoPClient
+    cli.expand_cases = expand_cases
     return cli.main()
 
 

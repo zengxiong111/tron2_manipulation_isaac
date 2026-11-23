@@ -8,6 +8,9 @@
 - [PhysX 快速开始](#physx-快速开始)
 - [控制器联调](#控制器联调)
 - [验证与范围](#验证与范围)
+  - [长轨迹与 VLA 回放](#长轨迹与-vla-回放)
+  - [同条件轨迹对照](#同条件轨迹对照)
+  - [电机流时序](#电机流时序)
 
 ## 组件
 
@@ -40,6 +43,14 @@ ServoP 运行时，Isaac 在每次电机更新时按机构当前姿态计算重�
    ```
 
    通过时会输出 `"physics_smoke": "passed"`、关节实测位置和跟踪误差。
+
+3. 无需启动控制器，检查固定版本的 URDF、MJCF 和导入后的 PhysX 机构。检查电机通信顺序、源模型有符号的关节轴、关节与电机力矩限位、转子惯量、网格路径、初始状态及力矩探测。JSON 也会报告根节点的世界坐标，供对照原版 MuJoCo 场景。
+
+   ```bash
+   "$ISAAC_PYTHON" -m tron2_isaac --upstream "$TRON2_UPSTREAM" --check-model
+   ```
+
+   通过时输出 `"model_check": "passed"`。原版 MJCF 将 `base_Link` 放在世界坐标 z = 1.21 m，Isaac 导入机构的 z = 0 m。SDK 位姿对照使用控制器底座坐标系。
 
 ## 控制器联调
 
@@ -74,29 +85,32 @@ ServoP 运行时，Isaac 在每次电机更新时按机构当前姿态计算重�
    python3 -m tron2_isaac.sdk --output-dir "$TRON2_RUN_DIR/sdk"
    ```
 
-5. 复现 300 Hz 伺服检查时，启动一次新会话，并在本仓库根目录运行以下命令。在四个伺服目标前加入上游 `H_SAFE` 和 `J_PREP` 用例，使机器人达到所需的起始姿态。ServoJ 和 ServoP 的目标与精度阈值沿用上游套件。
+5. 选择 `servo` 运行 300 Hz 伺服检查，选择 `move` 运行完整 Move 长轨迹，或选择 `vla_servoj` 回放带时间戳的 VLA 轨迹。每套用例均启动新的隔离会话。进入会话后，激活 SDK Python 环境，在本仓库根目录运行以下命令。`H_SAFE` 和 `J_PREP` 建立起始姿态。轨迹、时序和限位沿用固定版本 SDK。工作目录找不到 VLA 轨迹文件时，SDK 入口会在固定版本 SDK 目录下解析该相对路径。
 
    ```bash
-   python3 - <<'PY'
+   suite=servo
+   python3 - "$suite" <<'PY'
    import os
    from pathlib import Path
+   import sys
 
    import yaml
 
    run = Path(os.environ['TRON2_RUN_DIR'])
    config = Path(os.environ['TRON2_UPSTREAM']) / 'Tron2_arm_tests/config'
-   servo = yaml.safe_load((config / 'servo_cases.yaml').read_text())
+   suite = sys.argv[1]
+   document = yaml.safe_load((config / f'{suite}_cases.yaml').read_text())
    smoke = yaml.safe_load((config / 'test_cases.yaml').read_text())
-   servo['cases'] = [case for case in smoke['cases'] if case['id'] in ('H_SAFE', 'J_PREP')]
+   document['cases'] = [case for case in smoke['cases'] if case['id'] in ('H_SAFE', 'J_PREP')]
    defaults = yaml.safe_load((config / 'default.yaml').read_text())
    defaults['safety']['stop_on_failure'] = False
-   (run / 'servo-prepared.yaml').write_text(yaml.safe_dump(servo))
+   (run / f'{suite}-prepared.yaml').write_text(yaml.safe_dump(document))
    (run / 'sdk-continue.yaml').write_text(yaml.safe_dump(defaults))
    PY
    python3 -m tron2_isaac.sdk \
-     --cases "$TRON2_RUN_DIR/servo-prepared.yaml" \
+     --cases "$TRON2_RUN_DIR/$suite-prepared.yaml" \
      --config "$TRON2_RUN_DIR/sdk-continue.yaml" \
-     --output-dir "$TRON2_RUN_DIR/sdk-servo"
+     --output-dir "$TRON2_RUN_DIR/sdk-$suite"
    ```
 
 6. 激活 SDK Python 环境后，从仓库根目录运行 ServoP 稳态检查。它以 100 Hz 发送上游 `SP_TRACK` 轨迹，续发终点 3 s，并按 0.1 mm 阈值检查 SDK 回读的末端位置误差。在 `--` 前加 `--no-servop-gravity-compensation`，即可使用原版 LimX 前馈运行同一检查。
@@ -131,3 +145,65 @@ Isaac Sim 对照试验使用相同的 100 Hz 轨迹，并在终点续发 3 s。�
 先进入准备姿态后，Isaac Sim 和固定版本的 MuJoCo 基线均通过 300 Hz 套件的 **6/6**。该套件在伺服回到起始位姿后评估精度，100 Hz 的 `SP_TRACK` 用例则在去程目标点评估到达误差。独立 PhysX 冒烟检查确认了全部 16 轴，并跟踪四个命令轴，最大稳态位置误差为 0.0403 rad。
 
 当前场景用于双臂和头部控制。导入的夹爪为刚性几何体，场景不包含可驱动手指或物体操作。场景没有桌面。后续扩展 TRON2 桌面场景时，须按模型原始变换定位物理底座原点，并保持 `physical_base_z = table_top_z + 0.45` m。
+
+Isaac GUI 已渲染机器人，并通过独立 PhysX 冒烟检查。在 GUI 联调会话中，3 s ServoP 用例通过，SDK 实测发送频率为 299.99 Hz。GUI ServoJ 用例在运动前停在 SDK 起始姿态校验。联调步骤中的准备动作可用于建立该起始姿态。
+
+### 长轨迹与 VLA 回放
+
+两个仿真器均使用固定版本控制器与 SDK，执行相同的运动请求。完整 Move 套件包括 MoveJ、MoveH 和 MoveP 各两个 65 s 用例。VLA 回放使用 3,138 帧源轨迹，在约 104.57 s 的源轨迹段发送 31,371 个 SDK 指令。两边均完成了全部计划发送，且均未触发关节硬限位裁剪。
+
+| 结果 | 上游 MuJoCo | Isaac Sim |
+| --- | --- | --- |
+| Move 长轨迹 SDK 用例，含准备 | 8/8 | 8/8 |
+| MoveP 长轨迹最差 SDK 位置误差 | 13.72 mm | 12.56 mm |
+| VLA SDK 用例，含准备 | 3/3 | 3/3 |
+| VLA SDK 指令总数，含预热、过渡及返回 | 32,119/32,119 | 32,120/32,120 |
+| VLA SDK 发送频率 | 300.01 Hz | 300.01 Hz |
+| VLA 最大 SDK 关节跟踪误差 | 0.000140 rad | 0.000535 rad |
+
+### 同条件轨迹对照
+
+对照脚本在两个仿真器上向固定版本的 LimX 控制器发送相同的 100 Hz ServoJ 和 ServoP 参考轨迹。独立 SDK 连接以 50 Hz 采样关节位置、速度、力矩和控制器报告的末端位姿。配对时要求观测属于同一时间槽，且本地查询中点相差不超过 10 ms。报告分别计算运动段跟踪误差和终点保持误差。末端估计使用控制器底座坐标系。
+
+1. 激活 SDK Python 环境后，从仓库根目录采集 Isaac 轨迹。关闭附加补偿的选项使本次对照使用原版 LimX 前馈。
+
+   ```bash
+   ./scripts/run_sim.sh --no-servop-gravity-compensation -- \
+     bash -c 'python3 tests/compare_dynamics.py capture isaac "$TRON2_RUN_DIR/isaac-track.json"'
+   ```
+
+2. 在固定版本控制器已进入开发模式的隔离 MuJoCo 会话中，将 `TRON2_UPSTREAM` 设为上游仓库路径，`TRON2_ISAAC_REPO` 设为本仓库路径，`TRON2_RUN_DIR` 设为仓库外的输出目录。采集参考轨迹，再离线对比。`MUJOCO_TRACK` 和 `ISAAC_TRACK` 指向采集得到的 JSON 文件。
+
+   ```bash
+   python3 "$TRON2_ISAAC_REPO/tests/compare_dynamics.py" capture mujoco "$TRON2_RUN_DIR/mujoco-track.json"
+   python3 "$TRON2_ISAAC_REPO/tests/compare_dynamics.py" compare "$MUJOCO_TRACK" "$ISAAC_TRACK"
+   ```
+
+| 同条件对照结果 | MuJoCo | Isaac Sim，关闭 ServoP 补偿 |
+| --- | --- | --- |
+| ServoJ 运动 3 s 内的关节跟踪 P95 | 0.00154 rad | 0.00748 rad |
+| ServoP 运动 3 s 内的位置跟踪 P95 | 13.01 mm | 16.49 mm |
+| ServoP 保持 3 s 后的位置误差 | 12.54 mm | 12.54 mm |
+
+### 电机流时序
+
+在隔离仿真会话中运行只读时序观察器。它记录回调间隔和兼容的源时间戳，并输出各主题的 JSONL 摘要。Isaac 下使用 `--direct-ros2`，在主 MROS 到 ROS 2 桥之后观测 `/motor/cmd`，在 Isaac ROS 2 子进程的发布端观测 `/motor/state`。在原版 MuJoCo 的会话中用 `--engine mujoco` 运行并省略 `--direct-ros2`，通过独立的单向桥观测两个原生 MROS 主题。如果主桥使用了观察器默认的域 77，则把 `TRON2_TIMING_ROS_DOMAIN_ID` 设为未使用的域。
+
+```bash
+./scripts/run_sim.sh -- bash -c '
+  scripts/capture_mros_timing.sh --engine isaac --direct-ros2 \
+    --bridge-install "$TRON2_BRIDGE_INSTALL" \
+    --output "$TRON2_RUN_DIR/motor-timing.jsonl" --seconds 30
+'
+```
+
+时序测量包含回调调度和采集链路上的桥接开销。可用到达间隔估计缺失的周期，精确丢包计数需要消息序列号，而这些消息未提供序列号。通信仍连接但暂时没有新指令时，Isaac 沿用上一条指令。观察器使用 20 ms 阈值统计消息到达时的年龄。CPU CI 通过 `python -m unittest discover -s tests -p 'test_*.py' -v` 运行，无需 Isaac Sim 或 ROS。
+
+分别在两个无界面会话中使用相同的准备版 SDK 伺服套件采集 20 s，两边均通过 6 个 SDK 用例。观测到的指令流均约为 300 Hz。该轮 Isaac 的电机状态发布频率为 85.15 Hz，低于 300 Hz 目标。ROS 2 子进程的发布消息时间戳也显示出这一频率。
+
+| 观测流 | MuJoCo 到达频率 | Isaac 到达频率 | MuJoCo 间隔 P95 | Isaac 间隔 P95 |
+| --- | ---: | ---: | ---: | ---: |
+| `/motor/cmd` | 299.91 Hz | 300.04 Hz | 6.95 ms | 6.95 ms |
+| `/motor/state` | 300.01 Hz | 85.15 Hz | 4.06 ms | 16.63 ms |
+
+两次采集位于桥接链路的不同位置，数据反映各采集点的时序。控制器端的接收时序仍未测量。同一主机的独立无界面性能测试中，每个 PhysX 子步平均耗时 2.71 ms。电机循环每周期执行四个子步，该配置下的反馈频率受此限制。

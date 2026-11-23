@@ -101,11 +101,13 @@ class IsaacRobot:
             if not self._headless:
                 light = UsdLux.DistantLight.Define(stage, Sdf.Path("/DistantLight"))
                 light.CreateIntensityAttr().Set(1000.0)
+                fill = UsdLux.DomeLight.Define(stage, Sdf.Path("/DomeLight"))
+                fill.CreateIntensityAttr().Set(100.0)
                 from isaacsim.core.utils.viewports import set_camera_view
 
                 set_camera_view(
-                    eye=[2.6, -3.0, 1.9],
-                    target=[0.0, 0.0, 0.9],
+                    eye=[1.6, -2.0, 0.55],
+                    target=[0.0, 0.0, -0.35],
                     camera_prim_path="/OmniverseKit_Persp",
                 )
 
